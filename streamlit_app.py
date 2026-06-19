@@ -13,16 +13,17 @@ from root_cause_engine import detect_log_type, score_root_causes
 from timeline_engine import build_failure_chain, build_timeline
 
 
-APP_VERSION = "0.3"
+APP_VERSION = "0.4"
 
 
-def show_score_cards(stats, log_type):
-    cols = st.columns(5)
+def show_score_cards(stats, log_type, rule_pack_name):
+    cols = st.columns(6)
     cols[0].metric("Total lines", stats["total_lines"])
     cols[1].metric("Suspect lines", stats["suspect_lines"])
     cols[2].metric("Unique error codes", stats["unique_error_codes"])
     cols[3].metric("Ignored success lines", stats["ignored_success_lines"])
     cols[4].metric("Components", stats["components"])
+    cols[5].metric("Rule pack", rule_pack_name)
     st.caption(f"Detected log type: {log_type}")
 
 
@@ -32,12 +33,14 @@ def show_summary_card(log_type, root_cause_df, failure_chain):
     top_finding = "No ranked finding"
     confidence = "N/A"
     recommended_action = "Review suspect lines and context viewer."
+    rule_pack = "N/A"
 
     if not root_cause_df.empty:
         top = root_cause_df.iloc[0]
         top_finding = top.get("Finding", top_finding)
         confidence = f"{top.get('Confidence', 'N/A')}%"
         recommended_action = top.get("RecommendedAction", recommended_action)
+        rule_pack = top.get("RulePack", rule_pack)
 
     primary = failure_chain.get("primary_failure")
     primary_text = "No primary failure detected"
@@ -48,11 +51,12 @@ def show_summary_card(log_type, root_cause_df, failure_chain):
         if primary_code:
             primary_text += f" | {primary_code}"
 
-    cols = st.columns(4)
+    cols = st.columns(5)
     cols[0].metric("Log type", log_type)
-    cols[1].metric("Likely cause", top_finding)
-    cols[2].metric("Confidence", confidence)
-    cols[3].metric("Primary failure", primary_text)
+    cols[1].metric("Rule pack", rule_pack)
+    cols[2].metric("Likely cause", top_finding)
+    cols[3].metric("Confidence", confidence)
+    cols[4].metric("Primary failure", primary_text)
 
     st.info(recommended_action)
 
@@ -288,13 +292,14 @@ def main():
     parsed_df = parse_log_lines(log_text)
     error_events_df = find_error_events(parsed_df)
     error_summary_df = summarize_error_codes(parsed_df)
-    root_cause_df = score_root_causes(parsed_df, error_summary_df)
+    log_type = detect_log_type(parsed_df, uploaded_file.name)
+    root_cause_df = score_root_causes(parsed_df, error_summary_df, log_type)
     timeline_df = build_timeline(parsed_df)
     failure_chain = build_failure_chain(parsed_df)
-    log_type = detect_log_type(parsed_df, uploaded_file.name)
     stats = get_log_stats(parsed_df, error_events_df, error_summary_df)
+    active_rule_pack = root_cause_df.iloc[0].get("RulePack", "Generic") if not root_cause_df.empty else "Generic"
 
-    show_score_cards(stats, log_type)
+    show_score_cards(stats, log_type, active_rule_pack)
     show_summary_card(log_type, root_cause_df, failure_chain)
 
     overview_tab, root_cause_tab, failure_chain_tab, timeline_tab, errors_tab, suspect_tab, context_tab, components_tab, ignored_tab, raw_tab = st.tabs(
@@ -315,8 +320,7 @@ def main():
     with overview_tab:
         st.subheader("Analysis overview")
         st.write(
-            "SMSTS Detective v0.3 adds event timeline generation, primary failure detection, "
-            "and cascading failure analysis."
+            "SMSTS Detective v0.4 adds SCCM-specific rule packs for task sequence, content, application, and software update logs."
         )
         show_root_cause_analysis(root_cause_df, key_suffix="overview")
         show_failure_chain(failure_chain)
