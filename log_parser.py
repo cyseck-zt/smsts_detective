@@ -4,6 +4,7 @@ from collections import Counter
 import pandas as pd
 
 from error_database import lookup_error
+from root_cause_engine import is_ignored_success_code
 
 
 ERROR_CODE_PATTERN = re.compile(r"0x[0-9a-fA-F]{8}")
@@ -35,7 +36,9 @@ def parse_log_lines(log_text):
         if not stripped:
             continue
 
-        error_codes = ERROR_CODE_PATTERN.findall(stripped)
+        all_codes = ERROR_CODE_PATTERN.findall(stripped)
+        error_codes = [code for code in all_codes if not is_ignored_success_code(code)]
+        success_codes = [code for code in all_codes if is_ignored_success_code(code)]
         has_keyword = bool(KEYWORD_PATTERN.search(stripped))
 
         time_match = TIME_PATTERN.search(stripped)
@@ -49,7 +52,9 @@ def parse_log_lines(log_text):
                 "Time": time_match.group("time") if time_match else "",
                 "Component": component_match.group("component") if component_match else "",
                 "ErrorCodes": ", ".join(sorted(set(error_codes))),
+                "IgnoredCodes": ", ".join(sorted(set(success_codes))),
                 "HasErrorCode": bool(error_codes),
+                "HasIgnoredCode": bool(success_codes),
                 "HasKeyword": has_keyword,
                 "Message": stripped,
             }
@@ -76,6 +81,8 @@ def summarize_error_codes(parsed_df):
         if not value:
             continue
         for code in [item.strip() for item in value.split(",") if item.strip()]:
+            if is_ignored_success_code(code):
+                continue
             counter[code] += 1
 
     rows = []
@@ -108,9 +115,14 @@ def build_context_window(parsed_df, line_number, before=5, after=5):
 
 def get_log_stats(parsed_df, error_events_df, error_summary_df):
     """Build top-level log stats."""
+    ignored_code_count = 0
+    if not parsed_df.empty and "IgnoredCodes" in parsed_df.columns:
+        ignored_code_count = int((parsed_df["IgnoredCodes"] != "").sum())
+
     return {
         "total_lines": int(len(parsed_df)),
         "suspect_lines": int(len(error_events_df)),
         "unique_error_codes": int(len(error_summary_df)),
+        "ignored_success_lines": ignored_code_count,
         "components": int(parsed_df["Component"].replace("", pd.NA).dropna().nunique()) if not parsed_df.empty else 0,
     }
