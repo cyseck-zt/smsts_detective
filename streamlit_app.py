@@ -9,24 +9,51 @@ from log_parser import (
     read_uploaded_log,
     summarize_error_codes,
 )
+from root_cause_engine import detect_log_type, score_root_causes
 
 
-APP_VERSION = "0.1"
+APP_VERSION = "0.2"
 
 
-def show_score_cards(stats):
-    cols = st.columns(4)
+def show_score_cards(stats, log_type):
+    cols = st.columns(5)
     cols[0].metric("Total lines", stats["total_lines"])
     cols[1].metric("Suspect lines", stats["suspect_lines"])
     cols[2].metric("Unique error codes", stats["unique_error_codes"])
-    cols[3].metric("Components", stats["components"])
+    cols[3].metric("Ignored success lines", stats["ignored_success_lines"])
+    cols[4].metric("Components", stats["components"])
+    st.caption(f"Detected log type: {log_type}")
+
+
+def show_root_cause_analysis(root_cause_df):
+    st.subheader("Root cause ranking")
+
+    if root_cause_df.empty:
+        st.info("No root cause ranking could be generated yet. The log is either clean or the detective needs a better magnifying glass.")
+        return
+
+    top_finding = root_cause_df.iloc[0]
+    st.warning(
+        f"Top finding: {top_finding['Finding']} "
+        f"({top_finding['Confidence']}% confidence)."
+    )
+
+    st.dataframe(root_cause_df, width="stretch")
+
+    csv = root_cause_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download Root Cause Ranking CSV",
+        data=csv,
+        file_name="smsts_detective_root_cause_ranking.csv",
+        mime="text/csv",
+    )
 
 
 def show_error_summary(error_summary_df):
     st.subheader("Detected error codes")
 
     if error_summary_df.empty:
-        st.success("No hexadecimal error codes were detected. Suspicious, but in a nice way.")
+        st.success("No actionable hexadecimal error codes were detected. Known success/status codes were ignored.")
         return
 
     st.dataframe(error_summary_df, width="stretch")
@@ -111,6 +138,23 @@ def show_component_summary(parsed_df):
     st.dataframe(component_counts, width="stretch")
 
 
+def show_ignored_codes(parsed_df):
+    st.subheader("Ignored success/status codes")
+
+    if parsed_df.empty or "IgnoredCodes" not in parsed_df.columns:
+        st.info("No ignored codes detected.")
+        return
+
+    ignored_df = parsed_df[parsed_df["IgnoredCodes"] != ""][["Line", "IgnoredCodes", "Message"]]
+
+    if ignored_df.empty:
+        st.info("No ignored success/status codes detected.")
+        return
+
+    st.write("These codes were detected but excluded from error ranking because they usually indicate success/status noise.")
+    st.dataframe(ignored_df, width="stretch")
+
+
 def show_raw_log(parsed_df):
     st.subheader("Parsed log")
 
@@ -145,28 +189,38 @@ def main():
     parsed_df = parse_log_lines(log_text)
     error_events_df = find_error_events(parsed_df)
     error_summary_df = summarize_error_codes(parsed_df)
+    root_cause_df = score_root_causes(parsed_df, error_summary_df)
+    log_type = detect_log_type(parsed_df, uploaded_file.name)
     stats = get_log_stats(parsed_df, error_events_df, error_summary_df)
 
-    show_score_cards(stats)
+    show_score_cards(stats, log_type)
 
-    if not error_summary_df.empty:
+    if not root_cause_df.empty:
+        top_finding = root_cause_df.iloc[0]
+        st.warning(
+            f"Likely issue: {top_finding['Finding']} "
+            f"({top_finding['Confidence']}% confidence)."
+        )
+    elif not error_summary_df.empty:
         top_error = error_summary_df.iloc[0]
         st.warning(
             f"Top detected error: {top_error['ErrorCode']} - {top_error['Meaning']} "
             f"({top_error['Count']} occurrence(s))."
         )
     elif not error_events_df.empty:
-        st.warning("No known error codes were detected, but failure/error keywords were found.")
+        st.warning("No actionable error codes were detected, but failure/error keywords were found.")
     else:
         st.success("No obvious error codes or failure keywords were detected.")
 
-    overview_tab, errors_tab, suspect_tab, context_tab, components_tab, raw_tab = st.tabs(
+    overview_tab, root_cause_tab, errors_tab, suspect_tab, context_tab, components_tab, ignored_tab, raw_tab = st.tabs(
         [
             "Overview",
+            "Root Cause",
             "Error Codes",
             "Suspect Lines",
             "Context Viewer",
             "Components",
+            "Ignored Codes",
             "Parsed Log",
         ]
     )
@@ -174,10 +228,14 @@ def main():
     with overview_tab:
         st.subheader("Analysis overview")
         st.write(
-            "SMSTS Detective v0.1 scans for hexadecimal error codes, common failure keywords, "
-            "SCCM component metadata, and nearby context lines."
+            "SMSTS Detective v0.2 ignores known success/status codes, detects log type, "
+            "ranks likely root causes, and shows nearby context lines."
         )
+        show_root_cause_analysis(root_cause_df)
         show_error_summary(error_summary_df)
+
+    with root_cause_tab:
+        show_root_cause_analysis(root_cause_df)
 
     with errors_tab:
         show_error_summary(error_summary_df)
@@ -190,6 +248,9 @@ def main():
 
     with components_tab:
         show_component_summary(parsed_df)
+
+    with ignored_tab:
+        show_ignored_codes(parsed_df)
 
     with raw_tab:
         show_raw_log(parsed_df)
