@@ -25,7 +25,7 @@ def show_score_cards(stats, log_type):
     st.caption(f"Detected log type: {log_type}")
 
 
-def show_root_cause_analysis(root_cause_df):
+def show_root_cause_analysis(root_cause_df, key_suffix="root_cause"):
     st.subheader("Root cause ranking")
 
     if root_cause_df.empty:
@@ -46,10 +46,11 @@ def show_root_cause_analysis(root_cause_df):
         data=csv,
         file_name="smsts_detective_root_cause_ranking.csv",
         mime="text/csv",
+        key=f"download_root_cause_{key_suffix}",
     )
 
 
-def show_error_summary(error_summary_df):
+def show_error_summary(error_summary_df, key_suffix="error_summary"):
     st.subheader("Detected error codes")
 
     if error_summary_df.empty:
@@ -64,6 +65,7 @@ def show_error_summary(error_summary_df):
         data=csv,
         file_name="smsts_detective_error_summary.csv",
         mime="text/csv",
+        key=f"download_error_summary_{key_suffix}",
     )
 
 
@@ -74,7 +76,7 @@ def show_suspect_lines(error_events_df):
         st.success("No suspect log lines found.")
         return
 
-    search = st.text_input("Filter suspect lines", placeholder="error code, component, or text")
+    search = st.text_input("Filter suspect lines", placeholder="error code, component, or text", key="suspect_line_filter")
     filtered_df = error_events_df.copy()
 
     if search:
@@ -92,6 +94,7 @@ def show_suspect_lines(error_events_df):
         data=csv,
         file_name="smsts_detective_suspect_lines.csv",
         mime="text/csv",
+        key="download_suspect_lines",
     )
 
 
@@ -103,8 +106,8 @@ def show_context_view(parsed_df, error_events_df):
         return
 
     line_options = error_events_df["Line"].astype(int).tolist()
-    selected_line = st.selectbox("Select suspect line", line_options)
-    context_range = st.slider("Context lines before/after", min_value=1, max_value=20, value=5)
+    selected_line = st.selectbox("Select suspect line", line_options, key="context_selected_line")
+    context_range = st.slider("Context lines before/after", min_value=1, max_value=20, value=5, key="context_range")
 
     context_df = build_context_window(
         parsed_df,
@@ -231,14 +234,14 @@ def main():
             "SMSTS Detective v0.2 ignores known success/status codes, detects log type, "
             "ranks likely root causes, and shows nearby context lines."
         )
-        show_root_cause_analysis(root_cause_df)
-        show_error_summary(error_summary_df)
+        show_root_cause_analysis(root_cause_df, key_suffix="overview")
+        show_error_summary(error_summary_df, key_suffix="overview")
 
     with root_cause_tab:
-        show_root_cause_analysis(root_cause_df)
+        show_root_cause_analysis(root_cause_df, key_suffix="tab")
 
     with errors_tab:
-        show_error_summary(error_summary_df)
+        show_error_summary(error_summary_df, key_suffix="tab")
 
     with suspect_tab:
         show_suspect_lines(error_events_df)
