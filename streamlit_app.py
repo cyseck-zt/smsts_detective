@@ -386,7 +386,7 @@ def main():
             "SMSTS Detective v0.5 adds SCCM knowledge base guidance for detected error codes."
         )
         show_root_cause_analysis(root_cause_df, key_suffix="overview")
-        show_knowledge_base(error_summary_df)
+        # show_knowledge_base(error_summary_df)
         show_failure_chain(failure_chain)
 
     with root_cause_tab:
