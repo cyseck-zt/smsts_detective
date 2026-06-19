@@ -10,9 +10,10 @@ from log_parser import (
     summarize_error_codes,
 )
 from root_cause_engine import detect_log_type, score_root_causes
+from timeline_engine import build_failure_chain, build_timeline
 
 
-APP_VERSION = "0.2"
+APP_VERSION = "0.3"
 
 
 def show_score_cards(stats, log_type):
@@ -23,6 +24,37 @@ def show_score_cards(stats, log_type):
     cols[3].metric("Ignored success lines", stats["ignored_success_lines"])
     cols[4].metric("Components", stats["components"])
     st.caption(f"Detected log type: {log_type}")
+
+
+def show_summary_card(log_type, root_cause_df, failure_chain):
+    st.subheader("Detective summary")
+
+    top_finding = "No ranked finding"
+    confidence = "N/A"
+    recommended_action = "Review suspect lines and context viewer."
+
+    if not root_cause_df.empty:
+        top = root_cause_df.iloc[0]
+        top_finding = top.get("Finding", top_finding)
+        confidence = f"{top.get('Confidence', 'N/A')}%"
+        recommended_action = top.get("RecommendedAction", recommended_action)
+
+    primary = failure_chain.get("primary_failure")
+    primary_text = "No primary failure detected"
+    if primary is not None:
+        primary_line = int(primary.get("Line", 0))
+        primary_code = str(primary.get("ErrorCodes", "")).strip()
+        primary_text = f"Line {primary_line}"
+        if primary_code:
+            primary_text += f" | {primary_code}"
+
+    cols = st.columns(4)
+    cols[0].metric("Log type", log_type)
+    cols[1].metric("Likely cause", top_finding)
+    cols[2].metric("Confidence", confidence)
+    cols[3].metric("Primary failure", primary_text)
+
+    st.info(recommended_action)
 
 
 def show_root_cause_analysis(root_cause_df, key_suffix="root_cause"):
@@ -47,6 +79,70 @@ def show_root_cause_analysis(root_cause_df, key_suffix="root_cause"):
         file_name="smsts_detective_root_cause_ranking.csv",
         mime="text/csv",
         key=f"download_root_cause_{key_suffix}",
+    )
+
+
+def show_failure_chain(failure_chain):
+    st.subheader("Failure chain")
+    st.write(failure_chain.get("summary", "No failure chain summary available."))
+
+    primary = failure_chain.get("primary_failure")
+    if primary is None:
+        st.info("No primary failure detected.")
+        return
+
+    st.write("### Primary failure")
+    primary_df = pd.DataFrame([primary.to_dict() if hasattr(primary, "to_dict") else dict(primary)])
+    st.dataframe(primary_df, width="stretch")
+
+    resulting = failure_chain.get("resulting_failures", pd.DataFrame())
+    st.write("### Possible cascading failures")
+    if resulting is None or resulting.empty:
+        st.info("No later cascading failures detected after the primary failure.")
+    else:
+        st.dataframe(resulting, width="stretch")
+        st.download_button(
+            "Download Failure Chain CSV",
+            data=resulting.to_csv(index=False).encode("utf-8"),
+            file_name="smsts_detective_failure_chain.csv",
+            mime="text/csv",
+            key="download_failure_chain",
+        )
+
+
+def show_timeline(timeline_df):
+    st.subheader("Timeline")
+
+    if timeline_df.empty:
+        st.info("No timeline events were detected.")
+        return
+
+    severity_filter = st.multiselect(
+        "Filter severity",
+        sorted(timeline_df["Severity"].dropna().unique().tolist()),
+        default=sorted(timeline_df["Severity"].dropna().unique().tolist()),
+        key="timeline_severity_filter",
+    )
+
+    event_filter = st.multiselect(
+        "Filter event type",
+        sorted(timeline_df["EventType"].dropna().unique().tolist()),
+        default=sorted(timeline_df["EventType"].dropna().unique().tolist()),
+        key="timeline_event_filter",
+    )
+
+    filtered_df = timeline_df[
+        timeline_df["Severity"].isin(severity_filter) & timeline_df["EventType"].isin(event_filter)
+    ].copy()
+
+    st.dataframe(filtered_df, width="stretch")
+
+    st.download_button(
+        "Download Timeline CSV",
+        data=filtered_df.to_csv(index=False).encode("utf-8"),
+        file_name="smsts_detective_timeline.csv",
+        mime="text/csv",
+        key="download_timeline",
     )
 
 
@@ -193,32 +289,20 @@ def main():
     error_events_df = find_error_events(parsed_df)
     error_summary_df = summarize_error_codes(parsed_df)
     root_cause_df = score_root_causes(parsed_df, error_summary_df)
+    timeline_df = build_timeline(parsed_df)
+    failure_chain = build_failure_chain(parsed_df)
     log_type = detect_log_type(parsed_df, uploaded_file.name)
     stats = get_log_stats(parsed_df, error_events_df, error_summary_df)
 
     show_score_cards(stats, log_type)
+    show_summary_card(log_type, root_cause_df, failure_chain)
 
-    if not root_cause_df.empty:
-        top_finding = root_cause_df.iloc[0]
-        st.warning(
-            f"Likely issue: {top_finding['Finding']} "
-            f"({top_finding['Confidence']}% confidence)."
-        )
-    elif not error_summary_df.empty:
-        top_error = error_summary_df.iloc[0]
-        st.warning(
-            f"Top detected error: {top_error['ErrorCode']} - {top_error['Meaning']} "
-            f"({top_error['Count']} occurrence(s))."
-        )
-    elif not error_events_df.empty:
-        st.warning("No actionable error codes were detected, but failure/error keywords were found.")
-    else:
-        st.success("No obvious error codes or failure keywords were detected.")
-
-    overview_tab, root_cause_tab, errors_tab, suspect_tab, context_tab, components_tab, ignored_tab, raw_tab = st.tabs(
+    overview_tab, root_cause_tab, failure_chain_tab, timeline_tab, errors_tab, suspect_tab, context_tab, components_tab, ignored_tab, raw_tab = st.tabs(
         [
             "Overview",
             "Root Cause",
+            "Failure Chain",
+            "Timeline",
             "Error Codes",
             "Suspect Lines",
             "Context Viewer",
@@ -231,14 +315,20 @@ def main():
     with overview_tab:
         st.subheader("Analysis overview")
         st.write(
-            "SMSTS Detective v0.2 ignores known success/status codes, detects log type, "
-            "ranks likely root causes, and shows nearby context lines."
+            "SMSTS Detective v0.3 adds event timeline generation, primary failure detection, "
+            "and cascading failure analysis."
         )
         show_root_cause_analysis(root_cause_df, key_suffix="overview")
-        show_error_summary(error_summary_df, key_suffix="overview")
+        show_failure_chain(failure_chain)
 
     with root_cause_tab:
         show_root_cause_analysis(root_cause_df, key_suffix="tab")
+
+    with failure_chain_tab:
+        show_failure_chain(failure_chain)
+
+    with timeline_tab:
+        show_timeline(timeline_df)
 
     with errors_tab:
         show_error_summary(error_summary_df, key_suffix="tab")
