@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+from knowledge_base import build_kb_dataframe, get_kb_entry
 from log_parser import (
     build_context_window,
     find_error_events,
@@ -13,7 +14,7 @@ from root_cause_engine import detect_log_type, score_root_causes
 from timeline_engine import build_failure_chain, build_timeline
 
 
-APP_VERSION = "0.4"
+APP_VERSION = "0.5"
 
 
 def show_score_cards(stats, log_type, rule_pack_name):
@@ -169,6 +170,67 @@ def show_error_summary(error_summary_df, key_suffix="error_summary"):
     )
 
 
+def show_knowledge_base(error_summary_df):
+    st.subheader("SCCM Knowledge Base")
+
+    if error_summary_df.empty:
+        st.info("No actionable error codes were detected, so there is no KB guidance to show yet.")
+        return
+
+    kb_rows = build_kb_dataframe(error_summary_df)
+    kb_df = pd.DataFrame(kb_rows)
+
+    if kb_df.empty:
+        st.info("No knowledge base entries were generated.")
+        return
+
+    selected_code = st.selectbox(
+        "Select error code",
+        kb_df["ErrorCode"].tolist(),
+        key="kb_selected_code",
+    )
+
+    entry = get_kb_entry(selected_code)
+    selected_row = kb_df[kb_df["ErrorCode"] == selected_code].iloc[0]
+
+    st.write(f"### {selected_code} - {selected_row['Title']}")
+    st.write(selected_row["PlainEnglish"])
+
+    if entry:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write("#### Common SCCM causes")
+            for cause in entry["common_sccm_causes"]:
+                st.write(f"- {cause}")
+
+            st.write("#### Related logs")
+            for log_name in entry["related_logs"]:
+                st.write(f"- {log_name}")
+
+        with col2:
+            st.write("#### Check next")
+            for check in entry["check_next"]:
+                st.write(f"- {check}")
+
+            st.write("#### Related components")
+            for component in entry["related_components"]:
+                st.write(f"- {component}")
+    else:
+        st.warning("This error code is not yet in the local knowledge base. Add it if it keeps appearing, because apparently logs enjoy repeat performances.")
+
+    st.write("### All detected KB guidance")
+    st.dataframe(kb_df, width="stretch")
+
+    st.download_button(
+        "Download Knowledge Base Guidance CSV",
+        data=kb_df.to_csv(index=False).encode("utf-8"),
+        file_name="smsts_detective_knowledge_base_guidance.csv",
+        mime="text/csv",
+        key="download_kb_guidance",
+    )
+
+
 def show_suspect_lines(error_events_df):
     st.subheader("Suspect log lines")
 
@@ -302,13 +364,14 @@ def main():
     show_score_cards(stats, log_type, active_rule_pack)
     show_summary_card(log_type, root_cause_df, failure_chain)
 
-    overview_tab, root_cause_tab, failure_chain_tab, timeline_tab, errors_tab, suspect_tab, context_tab, components_tab, ignored_tab, raw_tab = st.tabs(
+    overview_tab, root_cause_tab, failure_chain_tab, timeline_tab, errors_tab, kb_tab, suspect_tab, context_tab, components_tab, ignored_tab, raw_tab = st.tabs(
         [
             "Overview",
             "Root Cause",
             "Failure Chain",
             "Timeline",
             "Error Codes",
+            "Knowledge Base",
             "Suspect Lines",
             "Context Viewer",
             "Components",
@@ -320,9 +383,10 @@ def main():
     with overview_tab:
         st.subheader("Analysis overview")
         st.write(
-            "SMSTS Detective v0.4 adds SCCM-specific rule packs for task sequence, content, application, and software update logs."
+            "SMSTS Detective v0.5 adds SCCM knowledge base guidance for detected error codes."
         )
         show_root_cause_analysis(root_cause_df, key_suffix="overview")
+        show_knowledge_base(error_summary_df)
         show_failure_chain(failure_chain)
 
     with root_cause_tab:
@@ -336,6 +400,9 @@ def main():
 
     with errors_tab:
         show_error_summary(error_summary_df, key_suffix="tab")
+
+    with kb_tab:
+        show_knowledge_base(error_summary_df)
 
     with suspect_tab:
         show_suspect_lines(error_events_df)
